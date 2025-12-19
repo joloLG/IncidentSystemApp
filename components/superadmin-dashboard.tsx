@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Loader2, LogOut, Info, CheckCircle, XCircle, Clock } from "lucide-react" // Removed Ban, CheckCircle, CalendarIcon
-import { userQueries, hospitalQueries, erTeamQueries, type User, type Hospital, type ErTeam, supabase } from "@/lib/supabase"
+import { userQueries, type User, supabase } from "@/lib/supabase"
 import { robustSignOut } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -22,9 +22,10 @@ type UserWithDisplayInfo = Omit<User, 'user_type'> & {
   lastName: string;
   email: string;
   mobileNumber?: string;
-  user_type: User['user_type'];
+  user_type: 'superadmin' | 'admin' | 'user';  // Only these three types allowed
   created_at: string;
-  isUpdating?: boolean; // Kept for role updates
+  isUpdating?: boolean;
+  is_banned?: boolean;
 }
 
 export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => Promise<void> }) {
@@ -58,14 +59,10 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
   const [isSubmittingUnban, setIsSubmittingUnban] = useState(false)
   const [unbanError, setUnbanError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
-  const [roleFilter, setRoleFilter] = useState<'all' | User['user_type']>('all')
+  const [roleFilter, setRoleFilter] = useState<'all' | 'superadmin' | 'admin' | 'user'>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'banned'>('all')
   const PAGE_SIZE = 15
   const [currentPage, setCurrentPage] = useState(1)
-  const [hospitals, setHospitals] = useState<Hospital[]>([])
-  const [hospitalAssignments, setHospitalAssignments] = useState<Record<string, string | null>>({})
-  const [erTeams, setErTeams] = useState<ErTeam[]>([])
-  const [erTeamAssignments, setErTeamAssignments] = useState<Record<string, number | null>>({})
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [currentUserName, setCurrentUserName] = useState<string>("Superadmin")
   const [greetingMessage, setGreetingMessage] = useState<string>("")
@@ -75,17 +72,13 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
   type ApprovalRequest = {
     id: string
     user_id: string
-    requested_role: 'admin' | 'hospital' | 'er_team'
+    requested_role: 'admin'
     requested_at: string
     reviewed_at?: string
     reviewed_by?: string
     status: 'pending' | 'approved' | 'rejected'
     notes?: string | null
     hospital_id?: string
-    er_team_id?: number
-    er_team?: {
-      name: string
-    }
     user?: {
       firstName: string
       lastName: string
@@ -124,22 +117,6 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
     }
   }
 
-  const fetchHospitalsAndAssignments = async () => {
-    try {
-      const [hospitalList, assignments] = await Promise.all([
-        hospitalQueries.getHospitals(),
-        hospitalQueries.getHospitalAssignments(),
-      ])
-      setHospitals(hospitalList)
-      const assignmentMap: Record<string, string | null> = {}
-      assignments.forEach((item) => {
-        assignmentMap[item.user_id] = item.hospital_id
-      })
-      setHospitalAssignments(assignmentMap)
-    } catch (err) {
-      console.error("Error fetching hospitals/assignments:", err)
-    }
-  }
 
   const fetchApprovalRequests = async () => {
     try {
@@ -155,31 +132,24 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
               email,
               mobileNumber
             ),
-            er_team:er_team_id (
-              name
-            )
           `)
           .order('requested_at', { ascending: false }),
         supabase
           .from('users')
           .select('id, firstName, lastName, email, mobileNumber, status, requested_role, created_at')
-          .in('status', ['pending_admin', 'pending_hospital', 'pending_er_team'])
+          .in('status', ['pending_admin'])
       ])
 
       if (requestsResult.error) throw requestsResult.error
       if (pendingUsersResult.error) throw pendingUsersResult.error
 
-      const fetchedRequests = (requestsResult.data || []) as ApprovalRequest[]
+      const fetchedRequests = (requestsResult.data || []) as unknown as ApprovalRequest[]
       const existingUserIds = new Set(fetchedRequests.map((req) => req.user_id))
 
       const syntheticRequests = (pendingUsersResult.data || [])
         .filter((pendingUser) => !existingUserIds.has(pendingUser.id))
         .map<ApprovalRequest>((pendingUser) => {
-          const requestedRole = pendingUser.requested_role === 'hospital' || pendingUser.status === 'pending_hospital'
-            ? 'hospital'
-            : pendingUser.requested_role === 'er_team' || pendingUser.status === 'pending_er_team'
-              ? 'er_team'
-              : 'admin'
+          const requestedRole = 'admin'
 
           return {
             id: `pending-${pendingUser.id}`,
@@ -220,21 +190,12 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
 
       // If this is a synthetic request, create a formal record first
       if (existingRequest.isSynthetic) {
-        const hospitalId = existingRequest.requested_role === 'hospital'
-          ? hospitalAssignments[existingRequest.user_id] ?? null
-          : null
-        const erTeamId = existingRequest.requested_role === 'er_team'
-          ? erTeamAssignments[existingRequest.user_id] ?? null
-          : null
-
         const { data: createdRequest, error: createError } = await supabase
           .from('admin_approval_requests')
           .insert({
             user_id: existingRequest.user_id,
             requested_role: existingRequest.requested_role,
             status: 'pending',
-            hospital_id: hospitalId,
-            er_team_id: erTeamId,
             notes: notes || null,
           })
           .select(`
@@ -245,16 +206,13 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
               email,
               mobileNumber
             ),
-            er_team:er_team_id (
-              name
-            )
           `)
           .single()
 
         if (createError || !createdRequest) throw createError
 
         workingRequest = {
-          ...createdRequest,
+          ...(createdRequest as unknown as ApprovalRequest),
           isSynthetic: false,
         }
       }
@@ -278,9 +236,7 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
 
       // If approving, update the user's status and role
       if (action === 'approve') {
-        const isHospitalRequest = workingRequest.requested_role === 'hospital'
-        const isErTeamRequest = workingRequest.requested_role === 'er_team'
-        const userType = isHospitalRequest ? 'hospital' : isErTeamRequest ? 'er_team' : 'admin'
+        const userType = 'admin' // Only admin role is supported now
         const status = 'active'
 
         const { error: userUpdateError } = await supabase
@@ -293,39 +249,6 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
           .eq('id', workingRequest.user_id)
 
         if (userUpdateError) throw userUpdateError
-
-        // If hospital request, assign hospital automatically
-        if (isHospitalRequest) {
-          const hospitalId = workingRequest.hospital_id || hospitalAssignments[workingRequest.user_id] || null
-          if (hospitalId) {
-            try {
-              await supabase
-                .from('hospital_users')
-                .upsert({
-                  user_id: workingRequest.user_id,
-                  hospital_id: hospitalId,
-                }, { onConflict: 'user_id' })
-            } catch (e) {
-              console.warn('Failed to automatically assign hospital', e)
-            }
-          }
-        }
-
-        if (isErTeamRequest) {
-          const teamId = workingRequest.er_team_id || erTeamAssignments[workingRequest.user_id] || null
-          if (teamId) {
-            try {
-              await supabase
-                .from('er_team_users')
-                .upsert({
-                  user_id: workingRequest.user_id,
-                  er_team_id: teamId,
-                }, { onConflict: 'user_id' })
-            } catch (e) {
-              console.warn('Failed to automatically assign ER team', e)
-            }
-          }
-        }
 
         // Create notification for the user
         try {
@@ -362,7 +285,7 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
       }
 
       // Refresh data
-      await Promise.all([fetchUsers(), fetchApprovalRequests(), fetchHospitalsAndAssignments(), fetchErTeamsAndAssignments()])
+      await Promise.all([fetchUsers(), fetchApprovalRequests()])
 
     } catch (err) {
       console.error("Error handling approval action:", err)
@@ -370,29 +293,8 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
     }
   }
 
-  // Set up real-time subscription for user updates
-  const fetchErTeamsAndAssignments = async () => {
-    try {
-      const [teams, assignments] = await Promise.all([
-        erTeamQueries.getErTeams(),
-        erTeamQueries.getErTeamAssignments(),
-      ])
-
-      setErTeams(teams)
-      const assignmentMap: Record<string, number | null> = {}
-      assignments.forEach((item) => {
-        assignmentMap[item.user_id] = item.er_team_id
-      })
-      setErTeamAssignments(assignmentMap)
-    } catch (err) {
-      console.error("Error fetching ER teams/assignments:", err)
-    }
-  }
-
   useEffect(() => {
-    fetchUsers();
-    fetchHospitalsAndAssignments();
-    fetchErTeamsAndAssignments();
+    fetchUsers()
     fetchApprovalRequests();
     
     // Subscribe to user updates (still useful for role changes or external ban updates)
@@ -504,22 +406,6 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
 
       await userQueries.updateUserRole(userId, newRole as User['user_type'])
 
-      if (newRole !== 'hospital') {
-        await hospitalQueries.assignHospitalToUser(userId, null)
-        setHospitalAssignments((prev) => ({
-          ...prev,
-          [userId]: null,
-        }))
-      }
-
-      if (newRole !== 'er_team') {
-        await erTeamQueries.assignErTeamToUser(userId, null)
-        setErTeamAssignments((prev) => ({
-          ...prev,
-          [userId]: null,
-        }))
-      }
-
       setUsers(users.map(user => 
         user.id === userId 
           ? { ...user, user_type: newRole as User['user_type'], isUpdating: false } 
@@ -536,37 +422,6 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
     }
   }
 
-  const handleHospitalAssignment = async (userId: string, hospitalId: string | null) => {
-    setUsers(users.map((user) => (user.id === userId ? { ...user, isUpdating: true } : user)))
-    try {
-      await hospitalQueries.assignHospitalToUser(userId, hospitalId)
-      setHospitalAssignments((prev) => ({
-        ...prev,
-        [userId]: hospitalId,
-      }))
-    } catch (err) {
-      console.error("Error assigning hospital:", err)
-      setError("Failed to update hospital assignment. Please try again.")
-    } finally {
-      setUsers(users.map((user) => (user.id === userId ? { ...user, isUpdating: false } : user)))
-    }
-  }
-
-  const handleErTeamAssignment = async (userId: string, erTeamId: number | null) => {
-    setUsers(users.map((user) => (user.id === userId ? { ...user, isUpdating: true } : user)))
-    try {
-      await erTeamQueries.assignErTeamToUser(userId, erTeamId)
-      setErTeamAssignments((prev) => ({
-        ...prev,
-        [userId]: erTeamId,
-      }))
-    } catch (err) {
-      console.error("Error assigning ER team:", err)
-      setError("Failed to update ER team assignment. Please try again.")
-    } finally {
-      setUsers(users.map((user) => (user.id === userId ? { ...user, isUpdating: false } : user)))
-    }
-  }
 
   // Ban helpers
   const openBanDialog = (user: UserWithDisplayInfo) => {
@@ -707,7 +562,7 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
   }, [users, searchTerm, roleFilter, statusFilter]);
 
   const sortedUsers = useMemo(() => {
-    const roleOrder: Record<string, number> = { superadmin: 0, admin: 1, hospital: 2, responder: 3, user: 4 };
+    const roleOrder: Record<string, number> = { superadmin: 0, admin: 1, user: 2 };
     return [...filteredUsers].sort((a, b) => {
       const roleA = roleOrder[a.user_type] ?? Number.MAX_SAFE_INTEGER;
       const roleB = roleOrder[b.user_type] ?? Number.MAX_SAFE_INTEGER;
@@ -865,8 +720,6 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
                     <SelectItem value="all">All Roles</SelectItem>
                     <SelectItem value="superadmin">Superadmin</SelectItem>
                     <SelectItem value="admin">Admin</SelectItem>
-                    <SelectItem value="hospital">Hospital</SelectItem>
-                    <SelectItem value="er_team">ER Team</SelectItem>
                     <SelectItem value="user">User</SelectItem>
                   </SelectContent>
                 </Select>
@@ -891,7 +744,6 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
                   <TableHead>Email</TableHead>
                   <TableHead>Contact</TableHead>
                   <TableHead>Role</TableHead>
-                  <TableHead>Hospital / ER Team</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Date Created</TableHead>
                 </TableRow>
@@ -899,7 +751,7 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
               <TableBody>
                 {paginatedUsers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-8 text-center text-sm text-gray-500">
+                    <TableCell colSpan={7} className="py-8 text-center text-sm text-gray-500">
                       No users match the current filters.
                     </TableCell>
                   </TableRow>
@@ -926,58 +778,9 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
                         <SelectContent>
                           <SelectItem value="superadmin">Superadmin</SelectItem>
                           <SelectItem value="admin">Admin</SelectItem>
-                          <SelectItem value="hospital">Hospital</SelectItem>
-                          <SelectItem value="er_team">ER Team</SelectItem>
                           <SelectItem value="user">User</SelectItem>
                         </SelectContent>
                       </Select>
-                    </TableCell>
-                    <TableCell>
-                      {user.user_type === 'hospital' ? (
-                        <Select
-                          value={(hospitalAssignments[user.id] ?? null) ?? 'unassigned'}
-                          onValueChange={(value) => {
-                            const hospitalId = value === 'unassigned' ? null : value
-                            void handleHospitalAssignment(user.id, hospitalId)
-                          }}
-                          disabled={user.isUpdating || hospitals.length === 0}
-                        >
-                          <SelectTrigger className="w-[200px]">
-                            <SelectValue placeholder="Assign hospital" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="unassigned">Unassigned</SelectItem>
-                            {hospitals.map((hospital) => (
-                              <SelectItem key={hospital.id} value={hospital.id}>
-                                {hospital.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : user.user_type === 'er_team' ? (
-                        <Select
-                          value={String((erTeamAssignments[user.id] ?? null) ?? 'unassigned')}
-                          onValueChange={(value) => {
-                            const nextValue = value === 'unassigned' ? null : Number(value)
-                            void handleErTeamAssignment(user.id, nextValue)
-                          }}
-                          disabled={user.isUpdating || erTeams.length === 0}
-                        >
-                          <SelectTrigger className="w-[200px]">
-                            <SelectValue placeholder="Assign ER team" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="unassigned">Unassigned</SelectItem>
-                            {erTeams.map((team) => (
-                              <SelectItem key={team.id} value={String(team.id)}>
-                                {team.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : (
-                        <span className="text-sm text-gray-500">—</span>
-                      )}
                     </TableCell>
                     <TableCell>
                       <TooltipProvider>
@@ -985,13 +788,12 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
                           <TooltipTrigger asChild>
                             <span className={cn(
                               "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium",
-                              user.user_type === 'superadmin' 
-                                ? 'bg-blue-100 text-blue-800' 
-                                : user.is_banned 
-                                  ? 'bg-red-100 text-red-800' 
-                                  : 'bg-green-100 text-green-800'
+                              user.user_type === 'superadmin' ? 'bg-purple-100 text-purple-800' :
+                              user.user_type === 'admin' ? 'bg-blue-100 text-blue-800' :
+                              'bg-gray-100 text-gray-800'
                             )}>
-                              {user.user_type === 'superadmin' ? 'Superadmin' : user.is_banned ? 'Banned' : 'Active'}
+                              {user.user_type === 'superadmin' ? 'Superadmin' :
+                              user.user_type === 'admin' ? 'Admin' : 'User'}
                               {(user.user_type === 'superadmin' || user.is_banned) && (
                                 <Info className="ml-1 h-3 w-3" />
                               )}
@@ -1064,130 +866,6 @@ export function SuperadminDashboard({ onLogoutAction }: { onLogoutAction: () => 
         </Card>
       </main>
 
-      {/* Approval Requests Section */}
-      <main className="py-6 px-4 sm:px-6 lg:px-8">
-        <Card>
-          <CardHeader>
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <CardTitle>Account Approval Requests</CardTitle>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <Select value={approvalFilter} onValueChange={(v) => setApprovalFilter(v as typeof approvalFilter)}>
-                  <SelectTrigger className="sm:w-48">
-                    <SelectValue placeholder="Filter by status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Requests</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {isLoadingApprovals ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-8 w-8 animate-spin" />
-              </div>
-            ) : filteredApprovalRequests.length === 0 ? (
-              <div className="py-8 text-center text-sm text-gray-500">
-                No {approvalFilter === 'all' ? '' : approvalFilter} approval requests found.
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>User</TableHead>
-                    <TableHead>Requested Role</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Requested Date</TableHead>
-                    <TableHead>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredApprovalRequests.map((request) => (
-                    <TableRow key={request.id}>
-                      <TableCell>
-                        <div>
-                          <div className="font-medium">
-                            {request.user?.firstName} {request.user?.lastName}
-                          </div>
-                          <div className="text-sm text-gray-500">{request.user?.email}</div>
-                          {request.hospital_id && (
-                            <div className="text-xs text-blue-600 mt-1">
-                              Hospital: {hospitals.find(h => h.id === request.hospital_id)?.name || 'Unknown'}
-                            </div>
-                          )}
-                          {request.er_team_id && (
-                            <div className="text-xs text-green-600 mt-1">
-                              ER Team: {request.er_team?.name || 'Unknown'}
-                            </div>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <span className={cn(
-                          "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium",
-                          request.requested_role === 'admin' 
-                            ? 'bg-blue-100 text-blue-800' 
-                            : 'bg-green-100 text-green-800'
-                        )}>
-                          {request.requested_role === 'admin' ? 'Admin Account' : 'Hospital Account'}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          {request.status === 'pending' && <Clock className="h-4 w-4 text-yellow-500" />}
-                          {request.status === 'approved' && <CheckCircle className="h-4 w-4 text-green-500" />}
-                          {request.status === 'rejected' && <XCircle className="h-4 w-4 text-red-500" />}
-                          <span className={cn(
-                            "text-sm font-medium",
-                            request.status === 'pending' ? 'text-yellow-700' :
-                            request.status === 'approved' ? 'text-green-700' : 'text-red-700'
-                          )}>
-                            {request.status.charAt(0).toUpperCase() + request.status.slice(1)}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {new Date(request.requested_at).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-2">
-                          {request.status === 'pending' && (
-                            <>
-                              <Button 
-                                size="sm" 
-                                onClick={() => openApprovalDialog(request, 'approve')}
-                                className="bg-green-600 hover:bg-green-700 text-white"
-                              >
-                                Approve
-                              </Button>
-                              <Button 
-                                size="sm" 
-                                variant="destructive" 
-                                onClick={() => openApprovalDialog(request, 'reject')}
-                              >
-                                Reject
-                              </Button>
-                            </>
-                          )}
-                          {request.status !== 'pending' && (
-                            <span className="text-sm text-gray-500">
-                              {request.reviewed_at ? `Reviewed ${new Date(request.reviewed_at).toLocaleDateString()}` : 'Reviewed'}
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      </main>
 
       {/* Ban Dialog */}
       <Dialog open={showBanModal} onOpenChange={setShowBanModal}>

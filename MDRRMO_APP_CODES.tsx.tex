@@ -1,0 +1,535 @@
+ 
+ * @/app/api/emergency/report/route.ts
+ */
+interface EmergencyReportPayload {
+  emergencyType: string;
+  latitude: number;
+  longitude: number;
+  locationAddress: string;
+  casualties?: number;
+  clientTimestamp?: string;
+}
+
+// API endpoint for submitting emergency reports
+export async function POST(req: Request) {
+  const supabase = createRouteHandlerClient({ cookies });
+  const { data: { user } } = await supabase.auth.getUser();
+  
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  
+  // Process and validate request
+  const body = await req.json();
+  const { emergencyType, latitude, longitude, locationAddress, casualties } = body;
+  
+  // Insert report into database
+  const { data: reportData, error } = await supabaseAdmin
+    .from('emergency_reports')
+    .insert({
+      user_id: user.id,
+      emergency_type: emergencyType,
+      latitude,
+      longitude,
+      location_address: locationAddress,
+      status: 'active',
+      casualties: casualties || 0
+    })
+    .select()
+    .single();
+    
+  // Return response
+  return NextResponse.json({ success: true, reportId: reportData?.id });
+}
+
+ * @/app/incident-posts/page.tsx (simplified)
+ */
+'use client';
+
+import { useEffect, useState } from 'react';
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+
+type IncidentStatus = 'reported' | 'assigned' | 'in_progress' | 'resolved' | 'cancelled';
+
+interface Incident {
+  id: string;
+  created_at: string;
+  status: IncidentStatus;
+  emergency_type: string;
+  location_address: string;
+  assigned_team?: string;
+  updated_at: string;
+}
+
+export default function IncidentManagement() {
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [loading, setLoading] = useState(true);
+  const supabase = createClientComponentClient();
+
+  // Fetch incidents
+  useEffect(() => {
+    const fetchIncidents = async () => {
+      const { data, error } = await supabase
+        .from('emergency_reports')
+        .select('*')
+        .order('created_at', { ascending: false });
+        
+      if (!error && data) {
+        setIncidents(data);
+      }
+      setLoading(false);
+    };
+
+    fetchIncidents();
+    
+    // Real-time subscription
+    const subscription = supabase
+      .channel('incidents_changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'emergency_reports' },
+        (payload) => {
+          fetchIncidents(); // Refresh data on changes
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // Update incident status
+  const updateStatus = async (id: string, newStatus: IncidentStatus) => {
+    const { error } = await supabase
+      .from('emergency_reports')
+      .update({ status: newStatus, updated_at: new Date().toISOString() })
+      .eq('id', id);
+      
+    if (!error) {
+      setIncidents(incidents.map(incident => 
+        incident.id === id ? { ...incident, status: newStatus } : incident
+      ));
+    }
+  };
+
+  // Render UI...
+  return (
+    <div className="p-4">
+      <h1 className="text-2xl font-bold mb-4">Incident Management</h1>
+      {loading ? (
+        <div>Loading incidents...</div>
+      ) : (
+        <div className="space-y-4">
+          {incidents.map((incident) => (
+            <div key={incident.id} className="border p-4 rounded-lg">
+              <h3 className="font-semibold">{incident.emergency_type}</h3>
+              <p>Location: {incident.location_address}</p>
+              <p>Status: {incident.status}</p>
+              <div className="mt-2 space-x-2">
+                <button 
+                  onClick={() => updateStatus(incident.id, 'in_progress')}
+                  className="px-3 py-1 bg-blue-500 text-white rounded"
+                >
+                  Mark In Progress
+                </button>
+                <button 
+                  onClick={() => updateStatus(incident.id, 'resolved')}
+                  className="px-3 py-1 bg-green-500 text-white rounded"
+                >
+                  Resolve
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+ * @/lib/auth.ts (simplified)
+ */
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '@/types/supabase';
+
+// Initialize Supabase client
+export const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+// Sign in with email and password
+export async function signInWithEmail(email: string, password: string) {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+  
+  if (error) throw error;
+  return data;
+}
+
+// Sign up new user
+export async function signUpWithEmail(email: string, password: string, userData: any) {
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        full_name: userData.fullName,
+        role: userData.role || 'public',
+      },
+    },
+  });
+  
+  if (error) throw error;
+  return data;
+}
+
+// Sign out
+export async function signOut() {
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
+}
+
+// Get current user session
+export async function getCurrentUser() {
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.user;
+}
+
+// Check if user has required role
+// Example usage: await hasRole('admin')
+export async function hasRole(requiredRole: string) {
+  const user = await getCurrentUser();
+  if (!user) return false;
+  
+  const { data } = await supabase
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', user.id)
+    .single();
+    
+  return data?.role === requiredRole;
+}
+
+/**
+ * Emergency Report
+ * Complete TypeScript interface for Emergency Reports
+ * @/types/emergency.ts
+ */
+interface EmergencyReport {
+  id: string;
+  user_id: string;
+  status: 'reported' | 'assigned' | 'in_progress' | 'resolved' | 'cancelled';
+  emergency_type: string;
+  emergency_details?: string;
+  location_address: string;
+  latitude: number;
+  longitude: number;
+  casualties?: number;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  assigned_team?: string;
+  media_urls?: string[];
+  created_at: string;
+  updated_at: string;
+  responded_at?: string;
+  resolved_at?: string;
+  
+  // User information
+  first_name?: string;
+  middle_name?: string;
+  last_name?: string;
+  mobile_number?: string;
+  
+  // Relations
+  er_team?: {
+    id: string;
+    name: string;
+    contact_number: string;
+  };
+  
+  // Additional metadata
+  metadata?: Record<string, any>;
+}
+
+/**
+ *  Emergency Response Team
+ * Complete TypeScript interface for Response Teams
+ * @/types/team.ts
+ */
+interface EmergencyResponseTeam {
+  id: string;
+  name: string;
+  description?: string;
+  contact_number: string;
+  status: 'available' | 'dispatched' | 'on_break' | 'unavailable';
+  current_assignment?: string;
+  members: TeamMember[];
+  created_at: string;
+  updated_at: string;
+  
+  // Location tracking
+  last_known_location?: {
+    latitude: number;
+    longitude: number;
+    updated_at: string;
+  };
+  
+  // Equipment and capabilities
+  equipment?: string[];
+  capabilities?: string[];
+  
+  // Shift information
+  current_shift?: {
+    start_time: string;
+    end_time: string;
+    members_on_duty: string[];
+  };
+}
+
+interface TeamMember {
+  id: string;
+  user_id: string;
+  name: string;
+  role: 'leader' | 'medic' | 'responder' | 'driver' | 'volunteer';
+  contact_number: string;
+  is_available: boolean;
+  skills: string[];
+  certifications: string[];
+  
+  // Additional metadata
+  joined_at: string;
+  last_training?: string;
+  
+  // Emergency contact
+  emergency_contact?: {
+    name: string;
+    relationship: string;
+    contact_number: string;
+  };
+}
+
+/**
+ * Patient Information
+ * Used in medical emergency reports
+ * @/types/patient.ts
+ */
+interface PatientInfo {
+  id: string;
+  report_id: string;
+  first_name: string;
+  middle_name?: string;
+  last_name: string;
+  suffix?: string;
+  birth_date?: string;
+  age?: number;
+  sex: 'male' | 'female' | 'other';
+  blood_type?: 'A+' | 'A-' | 'B+' | 'B-' | 'AB+' | 'AB-' | 'O+' | 'O-';
+  contact_number?: string;
+  address?: string;
+  
+  // Medical information
+  medical_history?: string[];
+  allergies?: string[];
+  current_medications?: string[];
+  
+  // Emergency contact
+  emergency_contact?: {
+    name: string;
+    relationship: string;
+    contact_number: string;
+    address?: string;
+  };
+  
+  // Triage information
+  triage_category?: 'red' | 'yellow' | 'green' | 'black';
+  vital_signs?: {
+    blood_pressure?: string;
+    pulse_rate?: number;
+    respiratory_rate?: number;
+    temperature?: number;
+    oxygen_saturation?: number;
+    gcs_score?: number;
+    timestamp: string;
+  }[];
+  
+  // Treatment information
+  treatments?: {
+    type: string;
+    description: string;
+    administered_by: string;
+    timestamp: string;
+    notes?: string;
+  }[];
+  
+  // Disposition
+  disposition?: {
+    status: 'treated_released' | 'transported' | 'admitted' | 'deceased' | 'other';
+    facility_name?: string;
+    facility_type?: 'hospital' | 'clinic' | 'home' | 'other';
+    timestamp: string;
+    notes?: string;
+  };
+  
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Emergency Response Team
+ * {
+ *   id: string
+ *   name: string
+ *   members: TeamMember[]
+ *   status: 'available' | 'dispatched' | 'on_break'
+ *   currentAssignment: string | null
+ *   contactNumber: string
+ *   lastUpdated: Date
+ * }
+ */
+
+// =============================================
+// 5. INTEGRATIONS
+// =============================================
+
+/**
+ * supabase Integration
+ * @/lib/supabase.ts
+ */
+import { createClient } from '@supabase/supabase-js';
+import { Database } from '@/types/supabase';
+
+// Client-side Supabase client
+export const supabase = createClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  }
+);
+
+// Server-side Supabase admin client (bypasses RLS)
+import { createClient as createServerClient } from '@supabase/supabase-js';
+
+export const supabaseAdmin = createServerClient<Database>(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  }
+);
+
+// Example: Real-time subscription to emergency reports
+const subscribeToEmergencyReports = (callback: (payload: any) => void) => {
+  const subscription = supabase
+    .channel('emergency_reports_changes')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'emergency_reports',
+      },
+      (payload) => {
+        callback(payload);
+      }
+    )
+    .subscribe();
+
+  // Return unsubscribe function
+  return () => {
+    supabase.removeChannel(subscription);
+  };
+};
+
+// Example: File upload to Supabase Storage
+export async function uploadIncidentMedia(
+  file: File,
+  reportId: string,
+  userId: string
+) {
+  const fileExt = file.name.split('.').pop();
+  const fileName = `${userId}/${reportId}/${Date.now()}.${fileExt}`;
+  
+  const { data, error } = await supabase.storage
+    .from('incident-media')
+    .upload(fileName, file);
+
+  if (error) throw error;
+  
+  // Get public URL
+  const { data: { publicUrl } } = supabase.storage
+    .from('incident-media')
+    .getPublicUrl(data.path);
+    
+  return publicUrl;
+}
+
+/**
+ *  Tech Stack
+ * - Frontend: Next.js, React, TypeScript
+ * - Styling: TailwindCSS
+ * - State Management: React Context, SWR
+ * - Database: Supabase (PostgreSQL)
+ * - Authentication: Supabase Auth
+ * - Real-time: Supabase Realtime
+ * - Maps: Google Maps API / Mapbox
+ *
+ * package.json Dependencies (simplified)
+ */
+{
+  "dependencies": {
+    // Core
+    "next": "^14.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.0.0",
+    
+    // UI & Styling
+    "@radix-ui/react-dialog": "^1.0.0",
+    "@radix-ui/react-dropdown-menu": "^2.0.0",
+    "@radix-ui/react-slot": "^1.0.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.0.0",
+    "lucide-react": "^0.300.0",
+    "next-themes": "^0.2.0",
+    "tailwind-merge": "^2.0.0",
+    "tailwindcss-animate": "^1.0.0",
+    
+    // Forms & Validation
+    "@hookform/resolvers": "^3.0.0",
+    "react-hook-form": "^7.0.0",
+    "zod": "^3.0.0",
+    "@hookform/error-message": "^3.0.0",
+    
+    // Backend & Data
+    "@supabase/auth-helpers-nextjs": "^0.8.0",
+    "@supabase/supabase-js": "^2.0.0",
+    "swr": "^2.0.0",
+    "date-fns": "^2.30.0",
+    
+    // Maps & Location
+    "@react-google-maps/api": "^2.0.0",
+    "react-map-gl": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "autoprefixer": "^10.0.0",
+    "eslint": "^8.0.0",
+    "eslint-config-next": "14.0.0",
+    "postcss": "^8.0.0",
+    "tailwindcss": "^3.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+
+export {}; 

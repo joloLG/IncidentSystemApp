@@ -10,7 +10,13 @@ import { supabase } from "@/lib/supabase"
 import { Bell, BellOff, LogOut, CheckCircle, MapPin, Send, Map, FileText, Calendar as CalendarIcon, FireExtinguisher, HeartPulse, Car, CloudRain, Swords, HelpCircle, PersonStanding, Navigation, Clock } from "lucide-react"
 import { Sidebar } from "@/components/sidebar"
 import AdminRealtimeOverlay, { AdminRealtimeOverlayRef, AdminNotificationRow } from "@/components/admin/AdminRealtimeOverlay"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Calendar } from "@/components/ui/calendar"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -82,42 +88,6 @@ interface BaseEntry {
 
 type NotificationPermissionState = NotificationPermission | "unsupported";
 
-interface ErTeamReportSummary {
-  id: string
-  status: "draft" | "pending_review" | "in_review" | "approved" | "rejected"
-  er_team_id: number
-  submitted_by: string
-  patient_payload: Record<string, any>[] // Now an array of patients
-  incident_payload: Record<string, any> | null
-  injury_payload: {
-    front?: Record<string, string[]>
-    back?: Record<string, string[]>
-  } | null
-  notes: string | null
-  created_at: string
-  updated_at: string
-  emergency_report_id: string | null
-  emergency_report?: {
-    id: string
-    status: string
-    emergency_type: string | null
-    location_address: string | null
-    created_at: string
-    responded_at: string | null
-    resolved_at: string | null
-    er_team_id: number | null
-  } | null
-  internal_report_id: number | null
-  internal_report?: {
-    id: number
-    incident_date: string
-    time_responded: string | null
-    barangay_id: number | null
-    er_team_id: number | null
-    prepared_by: string | null
-  } | null
-}
-
 interface AdminDashboardProps {
   onLogout: () => void;
   userData: any;
@@ -144,17 +114,7 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
   const [broadcastValidationError, setBroadcastValidationError] = useState<string | null>(null);
 
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-
-  const [erTeamReports, setErTeamReports] = useState<ErTeamReportSummary[]>([])
-  const [erTeamReportsLoading, setErTeamReportsLoading] = useState(false)
-  const [erTeamReportsError, setErTeamReportsError] = useState<string | null>(null)
-  const [erTeamReportsActionLoading, setErTeamReportsActionLoading] = useState(false)
-
-  const selectedErTeamReport = useMemo(() => {
-    if (!selectedReport) return null
-    return erTeamReports.find((report) => report.emergency_report_id === selectedReport.id) ?? null
-  }, [erTeamReports, selectedReport])
-  const overlayRef = useRef<AdminRealtimeOverlayRef>(null)
+  const overlayRef = useRef<AdminRealtimeOverlayRef>(null);
   const notificationsDropdownRef = useRef<HTMLDivElement>(null);
   const notificationsButtonRef = useRef<HTMLButtonElement>(null);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
@@ -730,74 +690,6 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
 
   const router = useRouter()
 
-  const erTeamReportsFetchingRef = useRef(false)
-  const erTeamReportsLastFetchedRef = useRef(0)
-
-  const fetchErTeamReports = useCallback(
-    async (force = false) => {
-      if (erTeamReportsFetchingRef.current) return
-      const now = Date.now()
-      if (!force && now - erTeamReportsLastFetchedRef.current < 4000) {
-        return
-      }
-
-      erTeamReportsFetchingRef.current = true
-      setErTeamReportsLoading(true)
-      setErTeamReportsError(null)
-      try {
-        const response = await fetch("/api/admin/er-team-reports?status=pending_review,in_review", {
-          credentials: "include",
-        })
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}))
-          throw new Error(payload?.error ?? response.statusText)
-        }
-        const payload = (await response.json()) as { reports: ErTeamReportSummary[] }
-        setErTeamReports(payload.reports ?? [])
-      } catch (err: any) {
-        const message = err?.message ?? "Failed to load ER team reports"
-        if (String(message).toLowerCase().includes("too many requests")) {
-          setErTeamReportsError("Temporarily rate limited. Please try again in a moment.")
-        } else {
-          setErTeamReportsError(message)
-        }
-        console.error("Failed to load ER team reports", err)
-      } finally {
-        erTeamReportsFetchingRef.current = false
-        erTeamReportsLastFetchedRef.current = Date.now()
-        setErTeamReportsLoading(false)
-      }
-    },
-    []
-  )
-
-  const handleErTeamReportAction = useCallback(
-    async (action: "in_review" | "approve") => {
-      if (!selectedErTeamReport) return
-      try {
-        setErTeamReportsActionLoading(true)
-        setErTeamReportsError(null)
-        const response = await fetch("/api/admin/er-team-reports", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ reportId: selectedErTeamReport.id, action }),
-        })
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}))
-          throw new Error(payload?.error ?? response.statusText)
-        }
-        await fetchErTeamReports(true)
-      } catch (err: any) {
-        console.error("Failed to update ER team report status", err)
-        setErTeamReportsError(err?.message ?? "Failed to update ER team report status")
-      } finally {
-        setErTeamReportsActionLoading(false)
-      }
-    },
-    [fetchErTeamReports, selectedErTeamReport]
-  )
-
   useEffect(() => {
     const fetchAllDashboardData = async () => {
       try {
@@ -827,7 +719,6 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
 
     fetchAllDashboardData();
     loadActiveAlert();
-    void fetchErTeamReports(true);
 
     // Auth state change listener to handle token refresh
     const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -1010,19 +901,6 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
         console.log('ER teams channel status:', status);
       });
 
-    const erTeamReportsChannel = supabase
-      .channel('dashboard-er-team-reports-channel')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'er_team_reports' },
-        (payload) => {
-          console.log('Change received on er_team_reports, refetching ER team reports:', payload);
-          void fetchErTeamReports();
-        }
-      )
-      .subscribe((status) => {
-        console.log('ER team reports channel status:', status);
-      });
 
 
     return () => {
@@ -1031,10 +909,9 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
       supabase.removeChannel(internalReportsChannel);
       supabase.removeChannel(erTeamsChannel);
       supabase.removeChannel(alertSettingsChannel);
-      supabase.removeChannel(erTeamReportsChannel);
       authSubscription.unsubscribe();
     };
-  }, [fetchAllReports, fetchAdminNotifications, fetchInternalReports, fetchErTeams, selectedReport, internalReports, loadActiveAlert, playAlertSound, fetchErTeamReports, fetchSingleReport, fetchSingleNotification]);
+  }, [fetchAllReports, fetchAdminNotifications, fetchInternalReports, fetchErTeams, selectedReport, internalReports, loadActiveAlert, playAlertSound, fetchSingleReport, fetchSingleNotification]);
 
   useEffect(() => {
     if (selectedReport?.latitude && selectedReport?.longitude) {
@@ -1068,7 +945,7 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
 
   const confirmBroadcastAlert = useCallback(async () => {
     if (!pendingBroadcastType) return
-    const label = pendingBroadcastType === 'earthquake' ? 'EARTHQUAKE ALERT' : 'TSUNAMI ALERT'
+    const label = pendingBroadcastType === 'earthquake' ? 'EARTHQUAKE ALERT' : pendingBroadcastType === 'tsunami' ? 'TSUNAMI ALERT' : 'Alert'
     const typeToSend = pendingBroadcastType
     const trimmed = broadcastMessage.trim()
     if (!trimmed) {
@@ -1414,7 +1291,14 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
       <Dialog open={broadcastModalOpen} onOpenChange={handleBroadcastModalChange}>
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
-            <DialogTitle>{pendingBroadcastType === 'earthquake' ? 'Earthquake Alert' : pendingBroadcastType === 'tsunami' ? 'Tsunami Alert' : 'Alert'} Message</DialogTitle>
+            <DialogTitle>
+              {pendingBroadcastType === 'earthquake' 
+                ? 'Earthquake Alert' 
+                : pendingBroadcastType === 'tsunami' 
+                  ? 'Tsunami Alert' 
+                  : 'Alert'
+              } Message
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
@@ -1533,58 +1417,57 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
         </div>
       </header>
 
-      <main className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-3 gap-6">
-            <Card className="shadow cursor-pointer hover:shadow-lg transition-shadow" onClick={() => setShowActiveModal(true)}>
-              <CardHeader><CardTitle>Active Emergencies</CardTitle></CardHeader>
-              <CardContent><p className="text-4xl font-bold text-red-600">{activeEmergenciesCount}</p></CardContent>
-            </Card>
-            <Card className="shadow cursor-pointer hover:shadow-lg transition-shadow" onClick={() => setShowRespondedModal(true)}>
-              <CardHeader><CardTitle>In-Progress</CardTitle></CardHeader>
-              <CardContent><p className="text-4xl font-bold text-yellow-600">{respondedCount}</p></CardContent>
-            </Card>
-            <Card className="shadow">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Resolved</CardTitle>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant={"outline"}
-                      className={cn(
-                        "w-[120px] justify-start text-left font-normal",
-                        !resolvedFilterDate && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {resolvedFilterDate ? format(resolvedFilterDate, "MM/dd") : <span>Date</span>}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="end">
-                    <Calendar
-                      mode="single"
-                      selected={resolvedFilterDate}
-                      onSelect={(d) => {
-                        const selected = d ?? new Date();
-                        setResolvedFilterDate(selected);
-                        setHasCustomResolvedDate(!isSameDay(selected, new Date()));
-                      }}
-                      initialFocus
-                    />
-                  </PopoverContent>
-                </Popover>
-              </CardHeader>
-              <CardContent>
-                <p className="text-4xl font-bold text-green-600">{filteredResolvedCount}</p>
-                {!hasCustomResolvedDate && (
-                  <p className="text-xs text-gray-500 mt-1">LATEST RESOLVED</p>
-                )}
-              </CardContent>
-            </Card>
+      <div className="container mx-auto px-4 py-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+          <Card className="shadow cursor-pointer hover:shadow-lg transition-shadow" onClick={() => setShowActiveModal(true)}>
+            <CardHeader><CardTitle>Active Emergencies</CardTitle></CardHeader>
+            <CardContent><p className="text-4xl font-bold text-red-600">{activeEmergenciesCount}</p></CardContent>
+          </Card>
+          <Card className="shadow cursor-pointer hover:shadow-lg transition-shadow" onClick={() => setShowRespondedModal(true)}>
+            <CardHeader><CardTitle>In-Progress</CardTitle></CardHeader>
+            <CardContent><p className="text-4xl font-bold text-yellow-600">{respondedCount}</p></CardContent>
+          </Card>
+          <Card className="shadow">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Resolved</CardTitle>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant={"outline"}
+                    className={cn(
+                      "w-[120px] justify-start text-left font-normal",
+                      !resolvedFilterDate && "text-muted-foreground"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {resolvedFilterDate ? format(resolvedFilterDate, "MM/dd") : <span>Date</span>}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="end">
+                  <Calendar
+                    mode="single"
+                    selected={resolvedFilterDate}
+                    onSelect={(d) => {
+                      const selected = d ?? new Date();
+                      setResolvedFilterDate(selected);
+                      setHasCustomResolvedDate(!isSameDay(selected, new Date()));
+                    }}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+            </CardHeader>
+            <CardContent>
+              <p className="text-4xl font-bold text-green-600">{filteredResolvedCount}</p>
+              {!hasCustomResolvedDate && (
+                <p className="text-xs text-gray-500 mt-1">LATEST RESOLVED</p>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {/* The main dashboard content remains here, as it's the default view */}
-        <>
-            <div className="lg:col-span-2">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
               <Card className="shadow-lg h-full">
                 <CardHeader className="bg-orange-600 text-white"><CardTitle className="flex items-center"><MapPin className="mr-3" />Incident Details & Actions</CardTitle></CardHeader>
                 <CardContent className="p-6">
@@ -1698,117 +1581,43 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
                         )}
                       </div>
 
-                      {selectedErTeamReport ? (
-                        <div className="mb-6 space-y-4 rounded-lg border border-orange-200 bg-orange-50 p-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
+                      {/* Incident information section */}
+                      {selectedReport && (
+                        <div className="mt-4">
+                          <h3 className="text-sm font-medium text-gray-700 mb-2">Incident Details</h3>
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                             <div>
-                              <h4 className="text-sm font-semibold text-orange-900">ER Team PCR submission</h4>
-                              <p className="text-xs text-orange-700/80">
-                                Received {new Date(selectedErTeamReport.updated_at).toLocaleString()} · Status: {selectedErTeamReport.status.replace(/_/g, " ")}
-                              </p>
+                              <p className="text-xs uppercase text-orange-800/80">Incident details</p>
+                              {selectedReport.emergency_type && (
+                                <p className="font-medium">{selectedReport.emergency_type}</p>
+                              )}
+                              {selectedReport.reportedAt && (
+                                <p className="text-xs text-gray-500">
+                                  {new Date(selectedReport.reportedAt).toLocaleString()}
+                                </p>
+                              )}
                             </div>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="border-orange-300 text-orange-700 hover:bg-white"
-                                onClick={() => router.push(`/admin/report?erTeamReportId=${selectedErTeamReport.id}`)}
-                              >
-                                Review in Make Report
-                              </Button>
-                              {selectedErTeamReport.status !== "in_review" && selectedErTeamReport.status !== "approved" ? (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="border-orange-300 text-orange-700 hover:bg-white"
-                                  disabled={erTeamReportsActionLoading}
-                                  onClick={() => void handleErTeamReportAction("in_review")}
-                                >
-                                  {erTeamReportsActionLoading ? "Updating…" : "Mark in review"}
-                                </Button>
-                              ) : null}
-                              {selectedErTeamReport.status !== "approved" ? (
-                                <Button
-                                  size="sm"
-                                  className="bg-emerald-600 text-white hover:bg-emerald-700"
-                                  disabled={erTeamReportsActionLoading}
-                                  onClick={() => void handleErTeamReportAction("approve")}
-                                >
-                                  {erTeamReportsActionLoading ? "Updating…" : "Approve report"}
-                                </Button>
-                              ) : null}
-                            </div>
-                          </div>
-
-                          <div className="space-y-3 text-sm text-gray-700">
-                            {(() => {
-                              const patients = Array.isArray(selectedErTeamReport.patient_payload) ? selectedErTeamReport.patient_payload : [selectedErTeamReport.patient_payload].filter(Boolean)
-                              const firstPatient = patients[0]
-                              if (!firstPatient) return null
-                              
-                              const patientInfo = firstPatient.patientInformation
-                              if (!patientInfo) return null
-                              
-                              const name = `${patientInfo.firstName ?? ""} ${patientInfo.lastName ?? ""}`.trim()
-                              const hasName = name.length > 0
-                              const hasAge = Boolean(patientInfo.age)
-                              const hasSex = typeof patientInfo.sex === "string" && patientInfo.sex.length > 0
-                              if (!hasName && !hasAge && !hasSex) return null
-                              
-                              return (
-                                <div>
-                                  <p className="text-xs uppercase text-orange-800/80">Lead patient {patients.length > 1 ? `(1 of ${patients.length})` : ""}</p>
-                                  {hasName ? <p className="font-medium">{name}</p> : null}
-                                  {hasAge || hasSex ? (
-                                    <p className="text-xs text-gray-500">
-                                      {hasAge ? `Age: ${patientInfo.age}` : null}
-                                      {hasAge && hasSex ? " · " : ""}
-                                      {hasSex ? `Sex: ${patientInfo.sex}` : null}
-                                    </p>
-                                  ) : null}
-                                </div>
-                              )
-                            })()}
-
-                            {(() => {
-                              const incident = selectedErTeamReport.incident_payload
-                              const typeLabel = incident?.incidentTypeLabel
-                              const date = incident?.incidentDate
-                              const time = incident?.incidentTime
-                              if (!typeLabel && !date && !time) return null
-                              return (
-                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                                  <div>
-                                    <p className="text-xs uppercase text-orange-800/80">Incident details</p>
-                                    {typeLabel ? <p className="font-medium">{typeLabel}</p> : null}
-                                    {date || time ? (
-                                      <p className="text-xs text-gray-500">
-                                        {[date, time].filter(Boolean).join(" · ")}
-                                      </p>
-                                    ) : null}
-                                  </div>
-                                  {selectedErTeamReport.notes ? (
-                                    <div>
+                            {selectedReport.admin_response && (
+                              <div>
                                       <p className="text-xs uppercase text-orange-800/80">Notes</p>
-                                      <p className="text-sm text-gray-600">{selectedErTeamReport.notes}</p>
-                                    </div>
-                                  ) : null}
-                                </div>
-                              )
-                            })()}
-
+                                <p className="text-sm text-gray-600">{selectedReport.admin_response}</p>
+                              </div>
+                            )}
                           </div>
                         </div>
-                      ) : null}
+                      )}
+
                     </div>
                   ) : (
-                    <div className="flex items-center justify-center h-full"><p className="text-gray-500">Select a report to view details.</p></div>
+                    <div className="flex items-center justify-center h-full">
+                      <p className="text-gray-500">Select a report to view details.</p>
+                    </div>
                   )}
                 </CardContent>
               </Card>
-            </div>
+          </div>
 
-            <div className="lg:col-span-1">
+          <div className="lg:col-span-1">
               <Card className="shadow-lg h-full">
                 <CardHeader className="bg-orange-600 text-white"><CardTitle>All Reports</CardTitle></CardHeader>
                 <CardContent className="p-0">
@@ -1847,11 +1656,11 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
                   </div>
                 </CardContent>
               </Card>
-            </div>
-          </>
-      </main>
+          </div>
+        </div>
+      </div>
 
-      
+      {/* Active Emergencies Modal */}
       <Dialog open={showActiveModal} onOpenChange={setShowActiveModal}>
         <DialogContent className="sm:max-w-[800px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -1897,7 +1706,7 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
         </DialogContent>
       </Dialog>
 
-      
+      {/* Responded Emergencies Modal */}
       <Dialog open={showRespondedModal} onOpenChange={setShowRespondedModal}>
         <DialogContent className="sm:max-w-[800px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -1943,24 +1752,29 @@ export function AdminDashboard({ onLogout, userData }: AdminDashboardProps) {
         </DialogContent>
       </Dialog>
 
+      {/* Logout Confirmation Modal */}
       <Dialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
         <DialogContent className="w-80">
-          <DialogHeader>
-            <DialogTitle>Confirm Logout</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to log out of the admin dashboard?
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end space-x-2 mt-4">
-            <Button variant="outline" onClick={() => setShowLogoutConfirm(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleLogout}>
-              Confirm Logout
-            </Button>
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-lg font-medium">Confirm Logout</h3>
+              <p className="text-sm text-muted-foreground">
+                Are you sure you want to log out of the admin dashboard?
+              </p>
+            </div>
+            <div className="flex justify-end space-x-2 mt-4">
+              <Button variant="outline" onClick={() => setShowLogoutConfirm(false)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={handleLogout}>
+                Confirm Logout
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
     </div>
   );
 }
+
+export default AdminDashboard;
